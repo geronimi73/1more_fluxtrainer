@@ -91,6 +91,7 @@ guidance_scale = 3.5
 max_grad_norm = 1.0
 # mode_scale = None
 
+# Eval ..
 validation_prompt="A TOK dog"
 num_validation_images = 1 
 val_image = load_image("./validation.jpg")
@@ -141,7 +142,7 @@ text_encoder_two.requires_grad_(False)
 transformer.enable_gradient_checkpointing()
 # text_encoder_one.gradient_checkpointing_enable()
 
-# # Setup LoRA
+# Setup LoRA
 print("Adding adapters")
 transformer_lora_config = LoraConfig(
     r=rank,
@@ -253,9 +254,8 @@ for epoch in range(first_epoch, num_train_epochs):
         
     for step, batch in enumerate(train_dataloader):
         prompts = batch["prompts"]
-        elems_to_repeat = len(prompts)
+
         model_input = latents_cache[step].sample()
-    
         model_input = (model_input - vae_config_shift_factor) * vae_config_scaling_factor
         model_input = model_input.to(dtype=weight_dtype)
     
@@ -267,9 +267,7 @@ for epoch in range(first_epoch, num_train_epochs):
         
         masked_image_latents = (masked_image_latents - vae.config.shift_factor) * vae.config.scaling_factor
         
-        masks = batch["masks"]
-        mask = masks
-    
+        mask = batch["masks"]    
         mask = mask[:, 0, :, :]  # batch_size, 8 * height, 8 * width (mask has not been 8x compressed)
         mask = mask.view(
             model_input.shape[0], model_input.shape[2], vae_scale_factor, model_input.shape[3], vae_scale_factor
