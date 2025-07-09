@@ -454,9 +454,9 @@ def prepare_mask_and_masked_image(image, mask):
     
     return mask, masked_image
 
-def get_sigmas(timesteps, n_dim=4, device="cuda", dtype=torch.float32):
-    sigmas = noise_scheduler_copy.sigmas.to(device=device, dtype=dtype)
-    schedule_timesteps = noise_scheduler_copy.timesteps.to(device)
+def get_sigmas(timesteps, noise_scheduler, n_dim=4, device="cuda", dtype=torch.float32):
+    sigmas = noise_scheduler.sigmas.to(device=device, dtype=dtype)
+    schedule_timesteps = noise_scheduler.timesteps.to(device)
     timesteps = timesteps.to(device)
     step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
 
@@ -464,4 +464,32 @@ def get_sigmas(timesteps, n_dim=4, device="cuda", dtype=torch.float32):
     while len(sigma.shape) < n_dim:
         sigma = sigma.unsqueeze(-1)
     return sigma
+
+def log_validation(
+    pipeline,
+    pipeline_args,
+    epoch,
+    torch_dtype,
+    num_validation_images,
+    validation_prompt,
+    is_final_validation=False,
+    seed=42,
+):
+    print(
+        f"Running validation... \n Generating {num_validation_images} images with prompt:"
+        f" {validation_prompt}."
+    )
+
+    # run inference
+    generator = torch.Generator(device=pipeline.device).manual_seed(seed) if seed else None
+
+    images = [pipeline(**pipeline_args, generator=generator).images[0] for _ in range(num_validation_images)]
+
+    del pipeline
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return images
+
+
 

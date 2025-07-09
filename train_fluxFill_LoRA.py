@@ -7,6 +7,7 @@ import os
 import random
 import shutil
 import warnings
+import wandb
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -14,15 +15,10 @@ import numpy as np
 import torch
 import torch.utils.checkpoint
 import transformers
-# from accelerate import Accelerator
-# from accelerate.logging import get_logger
-# from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from huggingface_hub import create_repo, upload_folder
 from huggingface_hub.utils import insecure_hashlib
 from peft import LoraConfig, set_peft_model_state_dict
 from peft.utils import get_peft_model_state_dict
-# from PIL import Image, ImageDraw
-# from PIL.ImageOps import exif_transpose
 from torch.utils.data import Dataset
 from tqdm.auto import tqdm
 from transformers import set_seed
@@ -37,19 +33,10 @@ from diffusers import (
 from diffusers.utils import load_image
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (
-    _set_state_dict_into_text_encoder,
-    cast_training_params,
     compute_density_for_timestep_sampling,
     compute_loss_weighting_for_sd3,
     free_memory,
 )
-from diffusers.utils import (
-    check_min_version,
-    convert_unet_state_dict_to_peft,
-    is_wandb_available,
-)
-from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
-from diffusers.utils.torch_utils import is_compiled_module
 
 from utils import (
     load_text_encoders,
@@ -59,6 +46,8 @@ from utils import (
     compute_text_embeddings,
     get_mask,
     prepare_mask_and_masked_image,
+    log_validation,
+    get_sigmas,
 )
 from huggingface_hub import snapshot_download
 
@@ -96,13 +85,17 @@ adam_beta2 = 0.999
 adam_weight_decay = 1e-04
 adam_epsilon = 1e-08
 max_sequence_length = 512
-validation_prompt="A TOK dog"
 weighting_scheme = "none"
 logit_mean = 0.0 
 logit_std = 1.0
 guidance_scale = 3.5
 max_grad_norm = 1.0
 # mode_scale = None
+
+validation_prompt="A TOK dog"
+num_validation_images = 1 
+val_image = load_image("./validation.jpg")
+val_mask = load_image("./validation_mask.jpeg")
 
 # Load scheduler
 noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
@@ -251,12 +244,186 @@ for batch in tqdm(train_dataloader, desc="Caching latents"):
         )
         latents_cache.append(vae.encode(batch["pixel_values"]).latent_dist)
 
-if validation_prompt is None:
-    del vae
-    free_memory()
 
 num_update_steps_per_epoch = math.ceil(len(train_dataloader) / gradient_accumulation_steps)
 num_update_steps_per_epoch
 
 num_train_epochs = math.ceil(max_train_steps / num_update_steps_per_epoch)
 num_train_epochs
+
+# Setup Logging 
+wandb.init(
+    project="FLUX-fill LoRA", 
+    # name=wandb_run
+).log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".json"))
+
+# Prepare for validation
+pipeline = FluxFillPipeline(
+    scheduler = noise_scheduler,
+    vae = vae,
+    text_encoder = text_encoders[0],
+    text_encoder_2 = text_encoders[1],
+    tokenizer = tokenizers[0],
+    tokenizer_2 = tokenizers[1],
+    transformer = transformer
+)
+
+pipeline_args = {"prompt": validation_prompt, "image": val_image, "mask_image": val_mask}
+
+# TRAIN!
+total_batch_size = train_batch_size 
+global_step = 0
+first_epoch = 0
+initial_global_step = 0
+num_train_epochs = 100
+
+for epoch in range(first_epoch, num_train_epochs):
+    if global_step % 100 == 0:
+        images = log_validation(
+            pipeline=pipeline,
+            pipeline_args=pipeline_args,
+            epoch=epoch,
+            torch_dtype=weight_dtype,
+            validation_prompt=validation_prompt,
+            num_validation_images=num_validation_images,
+         )
+        wandb.log(dict(validation = [ wandb.Image(image, caption=f"{i}: {validation_prompt}") for i, image in enumerate(images) ]))
+
+    transformer.train()
+        
+    for step, batch in enumerate(train_dataloader):
+        prompts = batch["prompts"]
+        elems_to_repeat = len(prompts)
+        model_input = latents_cache[step].sample()
+    
+        model_input = (model_input - vae_config_shift_factor) * vae_config_scaling_factor
+        model_input = model_input.to(dtype=weight_dtype)
+    
+        vae_scale_factor = 2 ** (len(vae_config_block_out_channels) - 1)
+        
+        masked_image_latents = vae.encode(
+            batch["masked_images"].to(device).reshape(batch["pixel_values"].shape).to(dtype=weight_dtype)
+        ).latent_dist.sample()
+        
+        masked_image_latents = (masked_image_latents - vae.config.shift_factor) * vae.config.scaling_factor
+        
+        masks = batch["masks"]
+        mask = masks
+    
+        mask = mask[:, 0, :, :]  # batch_size, 8 * height, 8 * width (mask has not been 8x compressed)
+        mask = mask.view(
+            model_input.shape[0], model_input.shape[2], vae_scale_factor, model_input.shape[3], vae_scale_factor
+        )  # batch_size, height, 8, width, 8
+        mask = mask.permute(0, 2, 4, 1, 3)  # batch_size, 8, 8, height, width
+        mask = mask.reshape(
+            model_input.shape[0], vae_scale_factor * vae_scale_factor, model_input.shape[2], model_input.shape[3]
+        )  # ba
+        
+        latent_image_ids = FluxFillPipeline._prepare_latent_image_ids(
+            model_input.shape[0],
+            model_input.shape[2] // 2,
+            model_input.shape[3] // 2,
+            device,
+            weight_dtype,
+        )
+        
+        noise = torch.randn_like(model_input)
+        bsz = model_input.shape[0]
+        
+        # Sample a random timestep for each image
+        # for weighting schemes where we sample timesteps non-uniformly
+        u = compute_density_for_timestep_sampling(
+            weighting_scheme=weighting_scheme,
+            batch_size=bsz,
+            logit_mean=logit_mean,
+            logit_std=logit_std,
+            # mode_scale=args.mode_scale,
+        )
+        
+        indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
+        timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)
+        
+        sigmas = get_sigmas(timesteps, noise_scheduler_copy, n_dim=model_input.ndim, dtype=model_input.dtype)
+        noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
+        
+        packed_noisy_model_input = FluxFillPipeline._pack_latents(
+            noisy_model_input,
+            batch_size=model_input.shape[0],
+            num_channels_latents=model_input.shape[1],
+            height=model_input.shape[2],
+            width=model_input.shape[3],
+        )
+        
+        if transformer.config.guidance_embeds:
+            guidance = torch.tensor([guidance_scale], device=device)
+            guidance = guidance.expand(model_input.shape[0])
+        else:
+            guidance = None
+        
+        masked_image_latents = FluxFillPipeline._pack_latents(
+            masked_image_latents,
+            batch_size=model_input.shape[0],
+            num_channels_latents=model_input.shape[1],
+            height=model_input.shape[2],
+            width=model_input.shape[3],
+        )
+        
+        mask = FluxFillPipeline._pack_latents(
+            mask,
+            batch_size=model_input.shape[0],
+            num_channels_latents=vae_scale_factor*vae_scale_factor,
+            height=model_input.shape[2],
+            width=model_input.shape[3],
+        )
+        masked_image_latents = torch.cat((masked_image_latents.to(device), mask.to(device)), dim=-1)
+        
+        transformer_input = torch.cat((packed_noisy_model_input, masked_image_latents), dim=2)    
+        
+        model_pred = transformer(
+            hidden_states=transformer_input.to(weight_dtype),
+            # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transforme rmodel (we should not keep it but I want to keep the inputs same for the model for testing)
+            timestep=timesteps / 1000,
+            guidance=guidance,
+            pooled_projections=pooled_prompt_embeds,
+            encoder_hidden_states=prompt_embeds,
+            txt_ids=text_ids,
+            img_ids=latent_image_ids,
+            return_dict=False,
+        )[0]
+        
+        model_pred = FluxFillPipeline._unpack_latents(
+            model_pred,
+            height=model_input.shape[2] * vae_scale_factor,
+            width=model_input.shape[3] * vae_scale_factor,
+            vae_scale_factor=vae_scale_factor,
+        )
+        
+        weighting = compute_loss_weighting_for_sd3(weighting_scheme=weighting_scheme, sigmas=sigmas)
+        target = noise - model_input
+        
+        loss = torch.mean(
+            (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
+            1,
+        )
+        
+        loss = loss.mean()
+        loss.backward()
+        
+        grad_norm = torch.nn.utils.clip_grad_norm_(transformer.parameters(), max_grad_norm)
+        
+        optimizer.step()
+        lr_scheduler.step()
+        optimizer.zero_grad()
+        
+        global_step += 1
+    
+        print(f"step {global_step}, epoch {epoch}, loss {loss.detach().item()}, grad_norm: {grad_norm}")
+        
+        logs = dict(
+            step = step,
+            epoch = epoch,
+            loss = loss.detach().item(), 
+            lr = lr_scheduler.get_last_lr()[0], 
+            grad_norm = grad_norm,
+        )
+        wandb.log(logs)
