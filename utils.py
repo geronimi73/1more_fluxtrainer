@@ -13,7 +13,7 @@ from torch.utils.data import Dataset
 from pathlib import Path
 from torchvision import transforms
 from torchvision.transforms.functional import crop
-
+from datasets import load_dataset
 
 def load_text_encoders(pretrained_model_name_or_path):
     tokenizer_one = CLIPTokenizer.from_pretrained(
@@ -44,54 +44,46 @@ def remove_cache_and_checkpoints(root_dir):
         if '.ipynb_checkpoints' in dirnames:
             shutil.rmtree(os.path.join(dirpath, '.ipynb_checkpoints'))
 
-class DreamBoothDataset(Dataset):
-    """
-    A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
-    It pre-processes the images.
-    """
+def load_corgie_dataloader(batch_size, resolution):
+    ds = MaskedDataset(
+        "g-ronimo/masked_corgies", 
+        resolution = resolution,
+        resizeTo = resolution
+    )
 
+    train_dataloader = torch.utils.data.DataLoader(
+        ds,
+        batch_size = batch_size,
+        shuffle = True,
+        collate_fn = lambda examples: collate_fn(examples),
+        # num_workers=args.dataloader_num_workers,
+    )
+
+    return train_dataloader
+
+# TODO: Check if the transformations are applied - eg. flip
+class MaskedDataset(Dataset):
     def __init__(
         self,
-        instance_data_root,
-        mask_data_root,
-        instance_prompt,
-        class_prompt,
+        hf_dataset_name,
         resolution,
-        class_data_root=None,
-        class_num=None,
-        size=1024,
-        repeats=1,
-        center_crop=False,
+        resizeTo=1024,
+        # repeats=1, ???
+        center_crop = False,
         random_flip = True,
+        hf_dataset_split = "train",
     ):
-        self.size = size
         self.center_crop = center_crop
-
-        self.instance_prompt = instance_prompt
-        self.mask_data_root = mask_data_root
-
-        self.custom_instance_prompts = None
-        self.class_prompt = class_prompt
-
-        # if --dataset_name is provided or a metadata jsonl file is provided in the local --instance_data directory,
-        # we load the training data using load_dataset
-
-        self.instance_data_root = Path(instance_data_root)
-        if not self.instance_data_root.exists():
-            raise ValueError("Instance images root doesn't exists.")
-
-        # Kreiere eine Liste mit allen Bildern im Ordner
-        self.instance_images_path = list(Path(instance_data_root).iterdir())    ## Meine
-        instance_images = [Image.open(path) for path in list(Path(instance_data_root).iterdir())]
-        self.custom_instance_prompts = None
-
-        self.instance_images = []
-        for img in instance_images:
-            self.instance_images.extend(itertools.repeat(img, repeats))
-
+        # ?? not sure what we need this for exactly
         self.pixel_values = []
-        train_resize = transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR)
-        train_crop = transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size)
+
+        # Load dataset 
+        self.hf_dataset = load_dataset(hf_dataset_name)[hf_dataset_split]
+        self.instance_images = [row["image"] for row in self.hf_dataset]
+
+        # Define transforms
+        train_resize = transforms.Resize(resizeTo, interpolation=transforms.InterpolationMode.BILINEAR)
+        train_crop = transforms.CenterCrop(resizeTo) if center_crop else transforms.RandomCrop(resizeTo)
         train_flip = transforms.RandomHorizontalFlip(p=1.0)
         train_transforms = transforms.Compose(
             [
@@ -99,6 +91,8 @@ class DreamBoothDataset(Dataset):
                 transforms.Normalize([0.5], [0.5]),
             ]
         )
+        
+        # Preprocess?
         for image in self.instance_images:
             image = exif_transpose(image)
             if not image.mode == "RGB":
@@ -116,91 +110,64 @@ class DreamBoothDataset(Dataset):
                 image = crop(image, y1, x1, h, w)
             image = train_transforms(image)
             self.pixel_values.append(image)
-
-        self.num_instance_images = len(self.instance_images)
-        self._length = self.num_instance_images
-
-        if class_data_root is not None:
-            self.class_data_root = Path(class_data_root)
-            self.class_data_root.mkdir(parents=True, exist_ok=True)
-            self.class_images_path = list(self.class_data_root.iterdir())
-            if class_num is not None:
-                self.num_class_images = min(len(self.class_images_path), class_num)
-            else:
-                self.num_class_images = len(self.class_images_path)
-            self._length = max(self.num_class_images, self.num_instance_images)
-        else:
-            self.class_data_root = None
-
-        self.image_transforms = transforms.Compose(
-            [
-                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
         
         self.image_transforms_resize_and_crop = transforms.Compose(
             [
-                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
+                train_resize,
+                train_crop
             ]
         )
     def __len__(self):
-        return self._length
+        return len(self.hf_dataset)
 
     def __getitem__(self, index):
         example = {}
+
+        # prepare PIL
+        pil_image = self.instance_images[index]
+        pil_image = pil_image.convert("RGB") if not pil_image.mode == "RGB" else pil_image
+        pil_image = self.image_transforms_resize_and_crop(pil_image)        
+        example["PIL_images"] = self.image_transforms_resize_and_crop(pil_image)
+
+        # resize mask to match PIL
+        mask = self.hf_dataset[index]["mask"].convert("L")
+        mask = mask.resize(pil_image.size, Image.NEAREST)
+        example["mask"] = mask
+
+        # havent figured out yet why we need these 'pixel_values'
+        example["instance_images"] = self.pixel_values[index]
+        example["instance_prompt"] = self.hf_dataset[index]["prompt"]
         
-        pil_image = Image.open(self.instance_images_path[index % self.num_instance_images])
-        if not pil_image.mode == "RGB":
-            pil_image = pil_image.convert("RGB")
-        pil_image = self.image_transforms_resize_and_crop(pil_image)
-        example["PIL_images"] = pil_image
-        example["image_path"] = self.instance_images_path[index % self.num_instance_images]
-        example["mask_data_path"] = self.mask_data_root
-        instance_image = self.pixel_values[index % self.num_instance_images]
-        #print(instance_image.shape)
-        example["instance_images"] = instance_image
-
-        if self.custom_instance_prompts:
-            caption = self.custom_instance_prompts[index % self.num_instance_images]
-            if caption:
-                example["instance_prompt"] = caption
-            else:
-                example["instance_prompt"] = self.instance_prompt
-
-        else:  # custom prompts were provided, but length does not match size of image dataset
-            example["instance_prompt"] = self.instance_prompt
-
-        if self.class_data_root:
-            class_image = Image.open(self.class_images_path[index % self.num_class_images])
-            class_image = exif_transpose(class_image)
-
-            if not class_image.mode == "RGB":
-                class_image = class_image.convert("RGB")
-            example["class_images"] = self.image_transforms(class_image)
-            example["class_prompt"] = self.class_prompt
-
         return example
 
-def collate_fn(examples, with_prior_preservation=False):
+def prepare_mask_and_masked_image(image, mask):
+    image = np.array(image.convert("RGB"))
+    image = image[None].transpose(0, 3, 1, 2)
+    image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
+
+    mask = np.array(mask.convert("L"))
+    mask = mask.astype(np.float32) / 255.0
+    mask = mask[None, None]
+    mask[mask < 0.5] = 0
+    mask[mask >= 0.5] = 1
+    mask = torch.from_numpy(mask)
+
+    masked_image = image * (mask < 0.5)
+    
+    return mask, masked_image
+
+
+def collate_fn(examples):
     pixel_values = [example["instance_images"] for example in examples]
     prompts = [example["instance_prompt"] for example in examples]
-
-    # Concat class and instance examples for prior preservation.
-    # We do this to avoid doing two forward passes.
-    if with_prior_preservation:
-        pixel_values += [example["class_images"] for example in examples]
-        prompts += [example["class_prompt"] for example in examples]
          
     masks = []
     masked_images = []    
     for example in examples:
             pil_image = example["PIL_images"]  # Here maybe PilImages
             # Get Mask
-            mask = get_mask(pil_image.size, example["image_path"], example["mask_data_path"], 1, False)
+            # mask = get_mask(pil_image.size, example["image_path"], example["mask_data_path"], 1, False)
+            mask = example["mask"]
             # prepare mask and masked image
             mask, masked_image = prepare_mask_and_masked_image(pil_image, mask)
 
@@ -422,37 +389,6 @@ def encode_prompt(
     text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device, dtype=dtype)
 
     return prompt_embeds, pooled_prompt_embeds, text_ids
-
-def get_mask(im_shape, original_image_path, mask_data_path, *args, **kwargs):
-    # Extract only the file name from the original path
-    _, filename = os.path.split(original_image_path)
-
-    # Construct the mask path (adjust as needed)
-    mask_path = os.path.join(mask_data_path, filename)
-    # Load and ensure single-channel
-    mask = Image.open(mask_path).convert("L")
-    
-    # Resize the mask to match your desired final image size if needed
-    # Note: im_shape is typically (width, height)
-    mask = mask.resize(im_shape, Image.NEAREST)
-
-    return mask
-
-def prepare_mask_and_masked_image(image, mask):
-    image = np.array(image.convert("RGB"))
-    image = image[None].transpose(0, 3, 1, 2)
-    image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
-
-    mask = np.array(mask.convert("L"))
-    mask = mask.astype(np.float32) / 255.0
-    mask = mask[None, None]
-    mask[mask < 0.5] = 0
-    mask[mask >= 0.5] = 1
-    mask = torch.from_numpy(mask)
-
-    masked_image = image * (mask < 0.5)
-    
-    return mask, masked_image
 
 def get_sigmas(timesteps, noise_scheduler, n_dim=4, device="cuda", dtype=torch.float32):
     sigmas = noise_scheduler.sigmas.to(device=device, dtype=dtype)

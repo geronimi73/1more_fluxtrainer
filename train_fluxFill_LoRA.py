@@ -40,12 +40,10 @@ from diffusers.training_utils import (
 
 from utils import (
     load_text_encoders,
-    DreamBoothDataset,
+    load_corgie_dataloader,
     remove_cache_and_checkpoints,
     collate_fn,
     compute_text_embeddings,
-    get_mask,
-    prepare_mask_and_masked_image,
     log_validation,
     get_sigmas,
 )
@@ -58,7 +56,8 @@ device = "cuda"
 weight_dtype = torch.bfloat16
 learning_rate = 1e-4
 lr_warmup_steps = 100
-max_train_steps = 1_000
+max_train_steps = 10_000
+num_train_epochs = 400
 lr_num_cycles = 1
 lr_power = 1.0
 gradient_accumulation_steps = 1 
@@ -95,7 +94,7 @@ max_grad_norm = 1.0
 validation_prompt="A TOK dog"
 num_validation_images = 1 
 val_image = load_image("./validation.jpg")
-val_mask = load_image("./validation_mask.jpeg")
+val_mask = load_image("./validation_mask.jpg")
 
 # Load scheduler
 noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
@@ -176,53 +175,15 @@ lr_scheduler = get_scheduler(
 
 # Load Dataset
 print("Loading dataset")
-snapshot_download(
-    "diffusers/dog-example",
-    local_dir= "./dog", repo_type="dataset",
-    ignore_patterns=".gitattributes",
-)
 
-snapshot_download(
-    "sebastianzok/dog-example-masks",
-    local_dir= "./dog_masks", repo_type="dataset",
-    ignore_patterns=".gitattributes",
-)
-
-[remove_cache_and_checkpoints(d) for d in ["./dog", "./dog_masks"]]
-
-
-instance_data_dir = "dog"
-mask_data_dir = "dog_masks"
+# TODO: this should be taken from the dataset instead of hardcoding it here
 instance_prompt = "A TOK dog"
-# class_prompt = None
-# num_class_images = 100
 resolution = 512
-repeats = 1 
-# center_crop = False
 
-train_dataset = DreamBoothDataset(
-    instance_data_root=instance_data_dir,
-    mask_data_root=mask_data_dir,
-    instance_prompt=instance_prompt,
-    class_prompt=None,
-    class_data_root=None,
-    # class_num=num_class_images,
-    size=resolution,
-    repeats=repeats,
-    center_crop=False,
-    resolution = resolution,
-)
-
-# Load DataLoader
-train_dataloader = torch.utils.data.DataLoader(
-    train_dataset,
-    batch_size=train_batch_size,
-    shuffle=True,
-    collate_fn=lambda examples: collate_fn(examples, with_prior_preservation=False),
-    # num_workers=args.dataloader_num_workers,
-)
+train_dataloader = load_corgie_dataloader(train_batch_size, resolution)
 
 # Encode prompts
+# !! what prompts are encoded here?! 
 instance_prompt_hidden_states, instance_pooled_prompt_embeds, instance_text_ids = compute_text_embeddings(
     instance_prompt, text_encoders, tokenizers,
     max_sequence_length = max_sequence_length
@@ -275,7 +236,6 @@ total_batch_size = train_batch_size
 global_step = 0
 first_epoch = 0
 initial_global_step = 0
-num_train_epochs = 100
 
 for epoch in range(first_epoch, num_train_epochs):
     if global_step % 100 == 0:
