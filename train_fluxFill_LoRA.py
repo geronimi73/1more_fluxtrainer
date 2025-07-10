@@ -55,13 +55,9 @@ pretrained_model_name_or_path = "black-forest-labs/FLUX.1-Fill-dev"
 device = "cuda"
 weight_dtype = torch.bfloat16
 learning_rate = 1e-4
-lr_warmup_steps = 100
 max_train_steps = 10_000
-num_train_epochs = 400
-lr_num_cycles = 1
-lr_power = 1.0
-gradient_accumulation_steps = 1 
-train_batch_size = 1 
+num_epochs = 200
+batch_size = 1 
 rank = 4
 alpha = 4
 target_modules = [
@@ -168,10 +164,6 @@ optimizer = optimizer_class(
 lr_scheduler = get_scheduler(
     "constant",
     optimizer=optimizer,
-    num_warmup_steps=lr_warmup_steps,
-    num_training_steps=max_train_steps,
-    num_cycles=lr_num_cycles,
-    power=lr_power,
 )
 
 # Load Dataset
@@ -181,7 +173,7 @@ print("Loading dataset")
 instance_prompt = "A TOK dog"
 resolution = 512
 
-train_dataloader = load_corgie_dataloader(train_batch_size, resolution)
+train_dataloader = load_corgie_dataloader(batch_size, resolution)
 
 # Encode prompts
 # !! what prompts are encoded here?! 
@@ -206,17 +198,9 @@ for batch in tqdm(train_dataloader, desc="Caching latents"):
         )
         latents_cache.append(vae.encode(batch["pixel_values"]).latent_dist)
 
-
-num_update_steps_per_epoch = math.ceil(len(train_dataloader) / gradient_accumulation_steps)
-num_update_steps_per_epoch
-
-num_train_epochs = math.ceil(max_train_steps / num_update_steps_per_epoch)
-num_train_epochs
-
 # Setup Logging 
 wandb.init(
     project="FLUX-fill LoRA", 
-    # name=wandb_run
 ).log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".json"))
 
 # Prepare for validation
@@ -233,12 +217,9 @@ pipeline = FluxFillPipeline(
 pipeline_args = {"prompt": validation_prompt, "image": val_image, "mask_image": val_mask}
 
 # TRAIN!
-total_batch_size = train_batch_size 
 global_step = 0
-first_epoch = 0
-initial_global_step = 0
 
-for epoch in range(first_epoch, num_train_epochs):
+for epoch in range(num_epochs):
     if global_step % 100 == 0:
         images = log_validation(
             pipeline=pipeline,
