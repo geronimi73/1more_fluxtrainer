@@ -85,12 +85,11 @@ logit_mean = 0.0
 logit_std = 1.0
 guidance_scale = 3.5
 max_grad_norm = 1.0
-# mode_scale = None
 
 # Eval ..
 validation_prompt="A TOK dog"
 num_validation_images = 1 
-val_image = load_image("./validation.jpg")
+val_image = load_image("./validation_hole.jpg")
 val_mask = load_image("./validation_mask.jpg")
 
 # Load scheduler
@@ -204,6 +203,7 @@ wandb.init(
 ).log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".json"))
 
 # Prepare for validation
+pipeline_args = {"prompt": validation_prompt, "image": val_image, "mask_image": val_mask}
 pipeline = FluxFillPipeline(
     scheduler = noise_scheduler,
     vae = vae,
@@ -213,8 +213,6 @@ pipeline = FluxFillPipeline(
     tokenizer_2 = tokenizers[1],
     transformer = transformer
 )
-
-pipeline_args = {"prompt": validation_prompt, "image": val_image, "mask_image": val_mask}
 
 # TRAIN!
 global_step = 0
@@ -276,7 +274,6 @@ for epoch in range(num_epochs):
             batch_size=bsz,
             logit_mean=logit_mean,
             logit_std=logit_std,
-            # mode_scale=args.mode_scale,
         )
         
         indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
