@@ -52,11 +52,11 @@ from huggingface_hub import snapshot_download
 # Parameters
 set_seed(42)
 pretrained_model_name_or_path = "black-forest-labs/FLUX.1-Fill-dev"
+target_repo = "g-ronimo/flux-fill_corgie-LoRA"
 device = "cuda"
 weight_dtype = torch.bfloat16
 learning_rate = 1e-4
-max_train_steps = 10_000
-num_epochs = 200
+num_epochs = 100
 batch_size = 1 
 rank = 4
 alpha = 4
@@ -89,8 +89,31 @@ max_grad_norm = 1.0
 # Eval ..
 validation_prompt="A TOK dog"
 num_validation_images = 1 
-val_image = load_image("./validation_hole.jpg")
-val_mask = load_image("./validation_mask.jpg")
+val_image = load_image("./validation_thomas.jpg")
+val_mask = load_image("./validation_thomas_mask.png")
+
+# Function defs
+
+# save and upload LoRA adapter
+def upload_adapter(model, target_repo, local_dir="./adapter"):
+    # target_repo = "g-ronimo/flux-fill_LoRA_test"
+    repo_id = create_repo(
+        repo_id = target_repo,
+        exist_ok = True,
+    ).repo_id
+
+    transformer_lora_layers_to_save = get_peft_model_state_dict(model)
+
+    FluxFillPipeline.save_lora_weights(
+        save_directory = local_dir,
+        transformer_lora_layers = transformer_lora_layers_to_save,
+    )
+
+    upload_folder(
+        repo_id=repo_id,
+        folder_path=local_dir,
+    )
+
 
 # Load scheduler
 noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
@@ -363,3 +386,8 @@ for epoch in range(num_epochs):
             grad_norm = grad_norm,
         )
         wandb.log(logs)
+
+print("Uploading adapter")
+upload_adapter(transformer, target_repo)
+
+wandb.finish()
