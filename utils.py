@@ -45,7 +45,7 @@ def remove_cache_and_checkpoints(root_dir):
             shutil.rmtree(os.path.join(dirpath, '.ipynb_checkpoints'))
 
 def load_corgie_dataloader(batch_size, resolution):
-    ds = MaskedDataset(
+    ds = MaskedDatasetRevised(
         "g-ronimo/masked_corgies", 
         resolution = resolution,
         resizeTo = resolution
@@ -55,7 +55,7 @@ def load_corgie_dataloader(batch_size, resolution):
         ds,
         batch_size = batch_size,
         shuffle = True,
-        collate_fn = lambda examples: collate_fn(examples),
+        collate_fn = lambda examples: collate_fn_revised(examples),
         # num_workers=args.dataloader_num_workers,
     )
 
@@ -77,6 +77,76 @@ def load_removeObject_dataloader(batch_size, resolution):
     )
 
     return train_dataloader
+
+class MaskedDatasetRevised(Dataset):
+    def __init__(
+        self,
+        hf_dataset_name,
+        resolution,
+        resizeTo=1024,
+        hf_dataset_split = "train",
+    ):
+        # Load dataset 
+        self.hf_dataset = load_dataset(hf_dataset_name)[hf_dataset_split]
+
+        self.image_transforms = transforms.Compose(
+            [
+                transforms.Resize(resizeTo, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(resizeTo),
+            ]
+        )
+    def __len__(self):
+        return len(self.hf_dataset)
+
+    def __getitem__(self, index):
+        # prepare PIL
+        image = self.hf_dataset[index]["image"]
+        image = image.convert("RGB") if not image.mode == "RGB" else image
+        image = self.image_transforms(pil_image)        
+
+        # resize mask to match PIL
+        mask = self.hf_dataset[index]["mask"].convert("L")
+        mask = mask.resize(image.size, Image.NEAREST)
+
+        prompt = self.hf_dataset[index]["prompt"]
+        
+        return dict(
+            image = image,
+            mask = mask,
+            prompt = prompt
+        )
+
+
+def collate_fn_revised(examples):
+    images = [example["image"] for example in examples]
+    prompts = [example["prompt"] for example in examples]
+         
+    masks = []
+    masked_images = []    
+    for example in examples:
+        pil_image = example["image"]  # Here maybe PilImages
+        mask = example["mask"]
+        mask, masked_image = prepare_mask_and_masked_image(pil_image, mask)
+
+        masks.append(mask)
+        masked_images.append(masked_image)
+  
+    train_transforms = transforms.Compose(
+        [
+            transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5]),
+        ]
+    )
+
+    pixel_values = torch.stack([train_transforms(img) for img in images])
+    pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+    
+    masks = torch.stack(masks)
+    masked_images = torch.stack(masked_images)
+
+    return dict(pixel_values = pixel_values, prompts = prompts, masks = masks, masked_images = masked_images)
+
+
 
 # TODO: Check if the transformations are applied - eg. flip
 class MaskedDataset(Dataset):
@@ -422,7 +492,6 @@ def log_validation(
     pipeline,
     pipeline_args,
     epoch,
-    torch_dtype,
     num_validation_images,
     validation_prompt,
     is_final_validation=False,

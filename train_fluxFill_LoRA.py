@@ -1,23 +1,11 @@
-import argparse
 import copy
-import itertools
-import logging
-import math
-import os
-import random
-import shutil
 import warnings
 import wandb
-from contextlib import nullcontext
-from pathlib import Path
 
-import numpy as np
 import torch
-import torch.utils.checkpoint
 import transformers
 from huggingface_hub import create_repo, upload_folder
-from huggingface_hub.utils import insecure_hashlib
-from peft import LoraConfig, set_peft_model_state_dict
+from peft import LoraConfig
 from peft.utils import get_peft_model_state_dict
 from torch.utils.data import Dataset
 from tqdm.auto import tqdm
@@ -52,8 +40,9 @@ from huggingface_hub import snapshot_download
 
 # Parameters
 set_seed(42)
+debug = False
 pretrained_model_name_or_path = "black-forest-labs/FLUX.1-Fill-dev"
-target_repo = "g-ronimo/flux-fill_ObjectRemoval-LoRA"
+target_repo = "g-ronimo/flux-fill_corgie-LoRA-2"
 device = "cuda"
 weight_dtype = torch.bfloat16
 learning_rate = 1e-4
@@ -86,14 +75,16 @@ logit_mean = 0.0
 logit_std = 1.0
 guidance_scale = 3.5
 max_grad_norm = 1.0
+instance_prompt = "A TOK dog."
+resolution = 512
 
 # Eval ..
-validation_prompt="background"
+validation_prompt = instance_prompt
 num_validation_images = 1 
-val_image = load_image("./validation_remove.jpg")
-val_mask = load_image("./validation_remove_mask.png")
+val_image = load_image("./validation.jpg")
+val_mask = load_image("./validation_mask.jpg")
 
-# Function defs
+## FUNCTION defs
 
 # save and upload LoRA adapter
 def upload_adapter(model, target_repo, local_dir="./adapter"):
@@ -125,8 +116,6 @@ noise_scheduler_copy = copy.deepcopy(noise_scheduler)
 # Load text encoders
 print("Loading tokenizers and text encoders")
 tokenizer_one, tokenizer_two, text_encoder_one, text_encoder_two = load_text_encoders(pretrained_model_name_or_path,)
-tokenizers = [tokenizer_one, tokenizer_two]
-text_encoders = [text_encoder_one, text_encoder_two]
 
 # Load VAE
 print("Loading VAE")
@@ -134,14 +123,9 @@ vae = AutoencoderKL.from_pretrained(
     pretrained_model_name_or_path,
     subfolder="vae",
 )
-vae_config_shift_factor = vae.config.shift_factor
-vae_config_scaling_factor = vae.config.scaling_factor
-vae_config_block_out_channels = vae.config.block_out_channels
 
 # Move to GPU, otherwise we might run out of RAM
-vae.to(device, dtype=weight_dtype)
-text_encoder_one.to(device, dtype=weight_dtype)
-text_encoder_two.to(device, dtype=weight_dtype)
+[model.to(device, dtype=weight_dtype) for model in [vae, text_encoder_one, text_encoder_two]]
 
 # Load Transformer
 print("Loading diffusion transformer")
@@ -153,13 +137,10 @@ transformer = FluxTransformer2DModel.from_pretrained(
 transformer.to(device, dtype=weight_dtype)
 
 # We only train the additional adapter LoRA layers
-transformer.requires_grad_(False)
-vae.requires_grad_(False)
-text_encoder_one.requires_grad_(False)
-text_encoder_two.requires_grad_(False)
+[model.requires_grad_(False) for model in [transformer, vae, text_encoder_one, text_encoder_two]]
 
+# Save VRAM
 transformer.enable_gradient_checkpointing()
-# text_encoder_one.gradient_checkpointing_enable()
 
 # Setup LoRA
 print("Adding adapters")
@@ -173,11 +154,8 @@ transformer.add_adapter(transformer_lora_config)
 transformer_lora_parameters = list(filter(lambda p: p.requires_grad, transformer.parameters()))
 
 # Setup Optimizer
-transformer_parameters_with_lr = {"params": transformer_lora_parameters, "lr": learning_rate}
-params_to_optimize = [transformer_parameters_with_lr]
-
 optimizer = optimizer_class(
-    params_to_optimize,
+    [{"params": transformer_lora_parameters, "lr": learning_rate}],
     betas=(adam_beta1, adam_beta2),
     weight_decay=adam_weight_decay,
     eps=adam_epsilon,
@@ -192,20 +170,17 @@ lr_scheduler = get_scheduler(
 # Load Dataset
 print("Loading dataset")
 
-# TODO: this should be taken from the dataset instead of hardcoding it here
-instance_prompt = "background"
-resolution = 512
-
 train_dataloader = load_removeObject_dataloader(batch_size, resolution)
 
 # Encode prompts
 # !! what prompts are encoded here?! 
 instance_prompt_hidden_states, instance_pooled_prompt_embeds, instance_text_ids = compute_text_embeddings(
-    instance_prompt, text_encoders, tokenizers,
+    instance_prompt, 
+    [text_encoder_one, text_encoder_two], 
+    [tokenizer_one, tokenizer_two],
     max_sequence_length = max_sequence_length
 )
 
-del text_encoder_one, text_encoder_two, tokenizer_one, tokenizer_two
 free_memory()
 
 prompt_embeds = instance_prompt_hidden_states
@@ -217,7 +192,7 @@ latents_cache = []
 for batch in tqdm(train_dataloader, desc="Caching latents"):
     with torch.no_grad():
         batch["pixel_values"] = batch["pixel_values"].to(
-            device, non_blocking=True, dtype=weight_dtype
+            device, non_blocking=True, dtype=transformer.dtype
         )
         latents_cache.append(vae.encode(batch["pixel_values"]).latent_dist)
 
@@ -231,10 +206,10 @@ pipeline_args = {"prompt": validation_prompt, "image": val_image, "mask_image": 
 pipeline = FluxFillPipeline(
     scheduler = noise_scheduler,
     vae = vae,
-    text_encoder = text_encoders[0],
-    text_encoder_2 = text_encoders[1],
-    tokenizer = tokenizers[0],
-    tokenizer_2 = tokenizers[1],
+    text_encoder = text_encoder_one,
+    text_encoder_2 = text_encoder_two,
+    tokenizer = tokenizer_one,
+    tokenizer_2 = tokenizer_two,
     transformer = transformer
 )
 
@@ -248,13 +223,13 @@ for epoch in range(num_epochs):
         prompts = batch["prompts"]
 
         model_input = latents_cache[step].sample()
-        model_input = (model_input - vae_config_shift_factor) * vae_config_scaling_factor
-        model_input = model_input.to(dtype=weight_dtype)
+        model_input = (model_input - vae.config.shift_factor) * vae.config.scaling_factor
+        model_input = model_input.to(transformer.dtype)
     
-        vae_scale_factor = 2 ** (len(vae_config_block_out_channels) - 1)
+        vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
         
         masked_image_latents = vae.encode(
-            batch["masked_images"].to(device).reshape(batch["pixel_values"].shape).to(dtype=weight_dtype)
+            batch["masked_images"].to(device).reshape(batch["pixel_values"].shape).to(transformer.dtype)
         ).latent_dist.sample()
         
         masked_image_latents = (masked_image_latents - vae.config.shift_factor) * vae.config.scaling_factor
@@ -274,12 +249,13 @@ for epoch in range(num_epochs):
             model_input.shape[2] // 2,
             model_input.shape[3] // 2,
             device,
-            weight_dtype,
+            transformer.dtype,
         )
         
         noise = torch.randn_like(model_input)
         bsz = model_input.shape[0]
         
+        # TODO: Simplify this, we don't the scheduler to sample a timestep!
         # Sample a random timestep for each image
         # for weighting schemes where we sample timesteps non-uniformly
         u = compute_density_for_timestep_sampling(
@@ -328,8 +304,14 @@ for epoch in range(num_epochs):
         
         transformer_input = torch.cat((packed_noisy_model_input, masked_image_latents), dim=2)    
         
+        if debug:
+            print("timesteps")
+            print(timesteps)
+            print("sigmas")
+            print(sigmas)
+
         model_pred = transformer(
-            hidden_states=transformer_input.to(weight_dtype),
+            hidden_states=transformer_input.to(transformer.dtype),
             # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transforme rmodel (we should not keep it but I want to keep the inputs same for the model for testing)
             timestep=timesteps / 1000,
             guidance=guidance,
@@ -380,7 +362,6 @@ for epoch in range(num_epochs):
                 pipeline=pipeline,
                 pipeline_args=pipeline_args,
                 epoch=epoch,
-                torch_dtype=weight_dtype,
                 validation_prompt=validation_prompt,
                 num_validation_images=num_validation_images,
              )
@@ -392,3 +373,8 @@ print("Uploading adapter")
 upload_adapter(transformer, target_repo)
 
 wandb.finish()
+
+import os
+os.system('runpodctl remove pod $RUNPOD_POD_ID')
+
+
