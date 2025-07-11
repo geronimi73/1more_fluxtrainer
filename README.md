@@ -1,7 +1,7 @@
 minimal FLUX1-dev fill LoRA training script
 
 # Motivation
-the latest "fill" variant of the FLUX1 family of models is powerful. The few training scripts I found are too complicated for my simple brain. Here I am trying to understand what's happening and distilling a minimal script
+The few FLUX fill training scripts I found are too complicated for my simple brain. Here I am trying to understand what's happening and distilling a minimal training script
 
 # Usage
 not yet 
