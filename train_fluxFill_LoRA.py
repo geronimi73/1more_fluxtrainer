@@ -41,6 +41,7 @@ from diffusers.training_utils import (
 from utils import (
     load_text_encoders,
     load_corgie_dataloader,
+    load_removeObject_dataloader,
     remove_cache_and_checkpoints,
     collate_fn,
     compute_text_embeddings,
@@ -52,7 +53,7 @@ from huggingface_hub import snapshot_download
 # Parameters
 set_seed(42)
 pretrained_model_name_or_path = "black-forest-labs/FLUX.1-Fill-dev"
-target_repo = "g-ronimo/flux-fill_corgie-LoRA"
+target_repo = "g-ronimo/flux-fill_ObjectRemoval-LoRA"
 device = "cuda"
 weight_dtype = torch.bfloat16
 learning_rate = 1e-4
@@ -87,10 +88,10 @@ guidance_scale = 3.5
 max_grad_norm = 1.0
 
 # Eval ..
-validation_prompt="A TOK dog"
+validation_prompt="background"
 num_validation_images = 1 
-val_image = load_image("./validation_thomas.jpg")
-val_mask = load_image("./validation_thomas_mask.png")
+val_image = load_image("./validation_remove.jpg")
+val_mask = load_image("./validation_remove_mask.png")
 
 # Function defs
 
@@ -192,10 +193,10 @@ lr_scheduler = get_scheduler(
 print("Loading dataset")
 
 # TODO: this should be taken from the dataset instead of hardcoding it here
-instance_prompt = "A TOK dog"
+instance_prompt = "background"
 resolution = 512
 
-train_dataloader = load_corgie_dataloader(batch_size, resolution)
+train_dataloader = load_removeObject_dataloader(batch_size, resolution)
 
 # Encode prompts
 # !! what prompts are encoded here?! 
@@ -241,17 +242,6 @@ pipeline = FluxFillPipeline(
 global_step = 0
 
 for epoch in range(num_epochs):
-    if global_step % 100 == 0:
-        images = log_validation(
-            pipeline=pipeline,
-            pipeline_args=pipeline_args,
-            epoch=epoch,
-            torch_dtype=weight_dtype,
-            validation_prompt=validation_prompt,
-            num_validation_images=num_validation_images,
-         )
-        wandb.log(dict(validation = [ wandb.Image(image, caption=f"{i}: {validation_prompt}") for i, image in enumerate(images) ]))
-
     transformer.train()
         
     for step, batch in enumerate(train_dataloader):
@@ -373,9 +363,7 @@ for epoch in range(num_epochs):
         optimizer.step()
         lr_scheduler.step()
         optimizer.zero_grad()
-        
-        global_step += 1
-    
+            
         print(f"step {global_step}, epoch {epoch}, loss {loss.detach().item()}, grad_norm: {grad_norm}")
         
         logs = dict(
@@ -386,6 +374,19 @@ for epoch in range(num_epochs):
             grad_norm = grad_norm,
         )
         wandb.log(logs)
+
+        if global_step % 100 == 0:
+            images = log_validation(
+                pipeline=pipeline,
+                pipeline_args=pipeline_args,
+                epoch=epoch,
+                torch_dtype=weight_dtype,
+                validation_prompt=validation_prompt,
+                num_validation_images=num_validation_images,
+             )
+            wandb.log(dict(validation = [ wandb.Image(image, caption=f"{i}: {validation_prompt}") for i, image in enumerate(images) ]))
+    
+        global_step += 1
 
 print("Uploading adapter")
 upload_adapter(transformer, target_repo)

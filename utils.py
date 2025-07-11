@@ -61,6 +61,23 @@ def load_corgie_dataloader(batch_size, resolution):
 
     return train_dataloader
 
+def load_removeObject_dataloader(batch_size, resolution):
+    ds = MaskedDataset(
+        "g-ronimo/masked_background", 
+        resolution = resolution,
+        resizeTo = resolution
+    )
+
+    train_dataloader = torch.utils.data.DataLoader(
+        ds,
+        batch_size = batch_size,
+        shuffle = True,
+        collate_fn = lambda examples: collate_fn(examples),
+        # num_workers=args.dataloader_num_workers,
+    )
+
+    return train_dataloader
+
 # TODO: Check if the transformations are applied - eg. flip
 class MaskedDataset(Dataset):
     def __init__(
@@ -164,15 +181,15 @@ def collate_fn(examples):
     masks = []
     masked_images = []    
     for example in examples:
-            pil_image = example["PIL_images"]  # Here maybe PilImages
-            # Get Mask
-            # mask = get_mask(pil_image.size, example["image_path"], example["mask_data_path"], 1, False)
-            mask = example["mask"]
-            # prepare mask and masked image
-            mask, masked_image = prepare_mask_and_masked_image(pil_image, mask)
+        pil_image = example["PIL_images"]  # Here maybe PilImages
+        # Get Mask
+        # mask = get_mask(pil_image.size, example["image_path"], example["mask_data_path"], 1, False)
+        mask = example["mask"]
+        # prepare mask and masked image
+        mask, masked_image = prepare_mask_and_masked_image(pil_image, mask)
 
-            masks.append(mask)
-            masked_images.append(masked_image)
+        masks.append(mask)
+        masked_images.append(masked_image)
   
     pixel_values = torch.stack(pixel_values)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
