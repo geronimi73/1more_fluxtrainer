@@ -1,0 +1,9 @@
+diffusers
+transformers
+peft
+sentencepiece
+protobuf
+wandb
+huggingface_hub
+datasets
+pillow
