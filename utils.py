@@ -102,7 +102,7 @@ class MaskedDatasetRevised(Dataset):
         # prepare PIL
         image = self.hf_dataset[index]["image"]
         image = image.convert("RGB") if not image.mode == "RGB" else image
-        image = self.image_transforms(pil_image)        
+        image = self.image_transforms(image)        
 
         # resize mask to match PIL
         mask = self.hf_dataset[index]["mask"].convert("L")

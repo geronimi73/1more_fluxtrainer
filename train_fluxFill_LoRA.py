@@ -170,7 +170,7 @@ lr_scheduler = get_scheduler(
 # Load Dataset
 print("Loading dataset")
 
-train_dataloader = load_removeObject_dataloader(batch_size, resolution)
+train_dataloader = load_corgie_dataloader(batch_size, resolution)
 
 # Encode prompts
 # !! what prompts are encoded here?! 
