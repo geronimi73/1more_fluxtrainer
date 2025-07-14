@@ -14,6 +14,7 @@ from pathlib import Path
 from torchvision import transforms
 from torchvision.transforms.functional import crop
 from datasets import load_dataset
+import random
 
 def load_text_encoders(pretrained_model_name_or_path):
     tokenizer_one = CLIPTokenizer.from_pretrained(
@@ -100,6 +101,10 @@ class MaskedDatasetRevised(Dataset):
 
     def __getitem__(self, index):
         # prepare PIL
+        # if random.random() > 0.5:
+        #     image = self.hf_dataset[index]["image"]
+        # else:
+        #     image = self.hf_dataset[index]["image_before"]
         image = self.hf_dataset[index]["image"]
         image = image.convert("RGB") if not image.mode == "RGB" else image
         image = self.image_transforms(image)        

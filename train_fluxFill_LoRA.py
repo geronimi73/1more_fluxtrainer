@@ -42,7 +42,7 @@ from huggingface_hub import snapshot_download
 set_seed(42)
 debug = False
 pretrained_model_name_or_path = "black-forest-labs/FLUX.1-Fill-dev"
-target_repo = "g-ronimo/flux-fill_ObjectRemoval-LoRA_3ndTry"
+target_repo = "g-ronimo/flux-fill_ObjectRemoval-LoRA_5thTry"
 device = "cuda"
 weight_dtype = torch.bfloat16
 learning_rate = 1e-4
@@ -75,7 +75,7 @@ logit_mean = 0.0
 logit_std = 1.0
 guidance_scale = 3.5
 max_grad_norm = 1.0
-instance_prompt = "Remove person or object REMOVE_TOK"
+instance_prompt = "Remove person or object."
 resolution = 512
 
 # Eval ..
@@ -188,13 +188,13 @@ pooled_prompt_embeds = instance_pooled_prompt_embeds
 text_ids = instance_text_ids
 
 # Cache latents
-latents_cache = []
-for batch in tqdm(train_dataloader, desc="Caching latents"):
-    with torch.no_grad():
-        batch["pixel_values"] = batch["pixel_values"].to(
-            device, non_blocking=True, dtype=transformer.dtype
-        )
-        latents_cache.append(vae.encode(batch["pixel_values"]).latent_dist)
+# latents_cache = []
+# for batch in tqdm(train_dataloader, desc="Caching latents"):
+#     with torch.no_grad():
+#         batch["pixel_values"] = batch["pixel_values"].to(
+#             device, non_blocking=True, dtype=transformer.dtype
+#         )
+#         latents_cache.append(vae.encode(batch["pixel_values"]).latent_dist)
 
 # Setup Logging 
 wandb.init(
@@ -222,7 +222,12 @@ for epoch in range(num_epochs):
     for step, batch in enumerate(train_dataloader):
         prompts = batch["prompts"]
 
-        model_input = latents_cache[step].sample()
+        # model_input = latents_cache[step].sample()
+        # model_input = (model_input - vae.config.shift_factor) * vae.config.scaling_factor
+        # model_input = model_input.to(transformer.dtype)
+        model_input = vae.encode(
+            batch["pixel_values"].to(device).reshape(batch["pixel_values"].shape).to(transformer.dtype)
+        ).latent_dist.sample()
         model_input = (model_input - vae.config.shift_factor) * vae.config.scaling_factor
         model_input = model_input.to(transformer.dtype)
     
