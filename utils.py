@@ -62,7 +62,7 @@ def load_corgie_dataloader(batch_size, resolution):
     return train_dataloader
 
 def load_removeObject_dataloader(batch_size, resolution):
-    ds = MaskedDataset(
+    ds = MaskedDatasetRevised(
         "g-ronimo/masked_background", 
         resolution = resolution,
         resizeTo = resolution
@@ -72,7 +72,7 @@ def load_removeObject_dataloader(batch_size, resolution):
         ds,
         batch_size = batch_size,
         shuffle = True,
-        collate_fn = lambda examples: collate_fn(examples),
+        collate_fn = lambda examples: collate_fn_revised(examples),
         # num_workers=args.dataloader_num_workers,
     )
 

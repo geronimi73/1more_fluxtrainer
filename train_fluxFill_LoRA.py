@@ -42,7 +42,7 @@ from huggingface_hub import snapshot_download
 set_seed(42)
 debug = False
 pretrained_model_name_or_path = "black-forest-labs/FLUX.1-Fill-dev"
-target_repo = "g-ronimo/flux-fill_corgie-LoRA-2"
+target_repo = "g-ronimo/flux-fill_ObjectRemoval-LoRA_3ndTry"
 device = "cuda"
 weight_dtype = torch.bfloat16
 learning_rate = 1e-4
@@ -75,14 +75,14 @@ logit_mean = 0.0
 logit_std = 1.0
 guidance_scale = 3.5
 max_grad_norm = 1.0
-instance_prompt = "A TOK dog."
+instance_prompt = "Remove person or object REMOVE_TOK"
 resolution = 512
 
 # Eval ..
 validation_prompt = instance_prompt
 num_validation_images = 1 
-val_image = load_image("./validation.jpg")
-val_mask = load_image("./validation_mask.jpg")
+val_image = load_image("./validation_remove.jpg")
+val_mask = load_image("./validation_remove_mask.png")
 
 ## FUNCTION defs
 
@@ -170,7 +170,7 @@ lr_scheduler = get_scheduler(
 # Load Dataset
 print("Loading dataset")
 
-train_dataloader = load_corgie_dataloader(batch_size, resolution)
+train_dataloader = load_removeObject_dataloader(batch_size, resolution)
 
 # Encode prompts
 # !! what prompts are encoded here?! 
