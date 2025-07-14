@@ -125,7 +125,10 @@ class MaskedDatasetRevised(Dataset):
 def collate_fn_revised(examples):
     images = [example["image"] for example in examples]
     prompts = [example["prompt"] for example in examples]
-         
+
+    # debug
+    [example["image"].save(f"image_{num}_{round(random.random()*100)}.jpg") for num, example in enumerate(examples)]
+
     masks = []
     masked_images = []    
     for example in examples:

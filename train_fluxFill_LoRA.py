@@ -42,12 +42,12 @@ from huggingface_hub import snapshot_download
 set_seed(42)
 debug = False
 pretrained_model_name_or_path = "black-forest-labs/FLUX.1-Fill-dev"
-target_repo = "g-ronimo/flux-fill_ObjectRemoval-LoRA_5thTry"
+target_repo = "g-ronimo/flux-fill_ObjectRemoval-LoRA_6thTry"
 device = "cuda"
 weight_dtype = torch.bfloat16
 learning_rate = 1e-4
-num_epochs = 100
-batch_size = 1 
+num_epochs = 400
+batch_size = 4
 rank = 4
 alpha = 4
 target_modules = [
