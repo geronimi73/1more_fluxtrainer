@@ -187,7 +187,7 @@ prompt_embeds = instance_prompt_hidden_states
 pooled_prompt_embeds = instance_pooled_prompt_embeds
 text_ids = instance_text_ids
 
-# Cache latents
+# TODO: Cache latents
 # latents_cache = []
 # for batch in tqdm(train_dataloader, desc="Caching latents"):
 #     with torch.no_grad():
@@ -226,7 +226,7 @@ for epoch in range(num_epochs):
         # model_input = (model_input - vae.config.shift_factor) * vae.config.scaling_factor
         # model_input = model_input.to(transformer.dtype)
         model_input = vae.encode(
-            batch["pixel_values"].to(device).reshape(batch["pixel_values"].shape).to(transformer.dtype)
+            batch["images"].to(device).reshape(batch["images"].shape).to(transformer.dtype)
         ).latent_dist.sample()
         model_input = (model_input - vae.config.shift_factor) * vae.config.scaling_factor
         model_input = model_input.to(transformer.dtype)
@@ -234,7 +234,7 @@ for epoch in range(num_epochs):
         vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
         
         masked_image_latents = vae.encode(
-            batch["masked_images"].to(device).reshape(batch["pixel_values"].shape).to(transformer.dtype)
+            batch["images_masked"].to(device).reshape(batch["images"].shape).to(transformer.dtype)
         ).latent_dist.sample()
         
         masked_image_latents = (masked_image_latents - vae.config.shift_factor) * vae.config.scaling_factor

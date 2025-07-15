@@ -46,7 +46,7 @@ def remove_cache_and_checkpoints(root_dir):
             shutil.rmtree(os.path.join(dirpath, '.ipynb_checkpoints'))
 
 def load_corgie_dataloader(batch_size, resolution):
-    ds = MaskedDatasetRevised(
+    ds = MaskedDataset(
         "g-ronimo/masked_corgies", 
         resolution = resolution,
         resizeTo = resolution
@@ -56,14 +56,14 @@ def load_corgie_dataloader(batch_size, resolution):
         ds,
         batch_size = batch_size,
         shuffle = True,
-        collate_fn = lambda examples: collate_fn_revised(examples),
+        collate_fn = lambda examples: collate_fn(examples),
         # num_workers=args.dataloader_num_workers,
     )
 
     return train_dataloader
 
 def load_removeObject_dataloader(batch_size, resolution):
-    ds = MaskedDatasetRevised(
+    ds = MaskedDataset(
         "g-ronimo/masked_background", 
         resolution = resolution,
         resizeTo = resolution
@@ -73,13 +73,13 @@ def load_removeObject_dataloader(batch_size, resolution):
         ds,
         batch_size = batch_size,
         shuffle = True,
-        collate_fn = lambda examples: collate_fn_revised(examples),
+        collate_fn = lambda examples: collate_fn(examples),
         # num_workers=args.dataloader_num_workers,
     )
 
     return train_dataloader
 
-class MaskedDatasetRevised(Dataset):
+class MaskedDataset(Dataset):
     def __init__(
         self,
         hf_dataset_name,
@@ -100,11 +100,6 @@ class MaskedDatasetRevised(Dataset):
         return len(self.hf_dataset)
 
     def __getitem__(self, index):
-        # prepare PIL
-        # if random.random() > 0.5:
-        #     image = self.hf_dataset[index]["image"]
-        # else:
-        #     image = self.hf_dataset[index]["image_before"]
         image = self.hf_dataset[index]["image"]
         image = image.convert("RGB") if not image.mode == "RGB" else image
         image = self.image_transforms(image)        
@@ -122,118 +117,34 @@ class MaskedDatasetRevised(Dataset):
         )
 
 
-def collate_fn_revised(examples):
-    images = [example["image"] for example in examples]
-    prompts = [example["prompt"] for example in examples]
-
-    # debug
-    [example["image"].save(f"image_{num}_{round(random.random()*100)}.jpg") for num, example in enumerate(examples)]
-
-    masks = []
-    masked_images = []    
-    for example in examples:
-        pil_image = example["image"]  # Here maybe PilImages
-        mask = example["mask"]
-        mask, masked_image = prepare_mask_and_masked_image(pil_image, mask)
-
-        masks.append(mask)
-        masked_images.append(masked_image)
-  
-    train_transforms = transforms.Compose(
+def collate_fn(examples):
+    # PIL->normalized tensor
+    pil_to_tensor = transforms.Compose(
         [
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
         ]
     )
 
-    pixel_values = torch.stack([train_transforms(img) for img in images])
-    pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-    
-    masks = torch.stack(masks)
-    masked_images = torch.stack(masked_images)
+    # text
+    prompts = [example["prompt"] for example in examples]
+    # tensors
+    images, images_masked, masks  = [], [], []
 
-    return dict(pixel_values = pixel_values, prompts = prompts, masks = masks, masked_images = masked_images)
+    for example in examples:
+        mask, image_masked = prepare_mask_and_masked_image(example["image"], example["mask"])
 
+        masks.append(mask)
+        images_masked.append(image_masked)
+        images.append(pil_to_tensor(example["image"]))
 
+    return dict(
+        images = torch.stack(images).to(memory_format=torch.contiguous_format).float(), 
+        images_masked = torch.stack(images_masked),
+        masks = torch.stack(masks), 
+        prompts = prompts, 
+    )
 
-# TODO: Check if the transformations are applied - eg. flip
-class MaskedDataset(Dataset):
-    def __init__(
-        self,
-        hf_dataset_name,
-        resolution,
-        resizeTo=1024,
-        # repeats=1, ???
-        center_crop = False,
-        random_flip = True,
-        hf_dataset_split = "train",
-    ):
-        self.center_crop = center_crop
-        # ?? not sure what we need this for exactly
-        self.pixel_values = []
-
-        # Load dataset 
-        self.hf_dataset = load_dataset(hf_dataset_name)[hf_dataset_split]
-        self.instance_images = [row["image"] for row in self.hf_dataset]
-
-        # Define transforms
-        train_resize = transforms.Resize(resizeTo, interpolation=transforms.InterpolationMode.BILINEAR)
-        train_crop = transforms.CenterCrop(resizeTo) if center_crop else transforms.RandomCrop(resizeTo)
-        train_flip = transforms.RandomHorizontalFlip(p=1.0)
-        train_transforms = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-        
-        # Preprocess?
-        for image in self.instance_images:
-            image = exif_transpose(image)
-            if not image.mode == "RGB":
-                image = image.convert("RGB")
-            image = train_resize(image)
-            if random_flip and random.random() < 0.5:
-                # flip
-                image = train_flip(image)
-            if center_crop:
-                y1 = max(0, int(round((image.height - args.resolution) / 2.0)))
-                x1 = max(0, int(round((image.width - args.resolution) / 2.0)))
-                image = train_crop(image)
-            else:
-                y1, x1, h, w = train_crop.get_params(image, (resolution, resolution))
-                image = crop(image, y1, x1, h, w)
-            image = train_transforms(image)
-            self.pixel_values.append(image)
-        
-        self.image_transforms_resize_and_crop = transforms.Compose(
-            [
-                train_resize,
-                train_crop
-            ]
-        )
-    def __len__(self):
-        return len(self.hf_dataset)
-
-    def __getitem__(self, index):
-        example = {}
-
-        # prepare PIL
-        pil_image = self.instance_images[index]
-        pil_image = pil_image.convert("RGB") if not pil_image.mode == "RGB" else pil_image
-        pil_image = self.image_transforms_resize_and_crop(pil_image)        
-        example["PIL_images"] = self.image_transforms_resize_and_crop(pil_image)
-
-        # resize mask to match PIL
-        mask = self.hf_dataset[index]["mask"].convert("L")
-        mask = mask.resize(pil_image.size, Image.NEAREST)
-        example["mask"] = mask
-
-        # havent figured out yet why we need these 'pixel_values'
-        example["instance_images"] = self.pixel_values[index]
-        example["instance_prompt"] = self.hf_dataset[index]["prompt"]
-        
-        return example
 
 def prepare_mask_and_masked_image(image, mask):
     image = np.array(image.convert("RGB"))
@@ -250,35 +161,6 @@ def prepare_mask_and_masked_image(image, mask):
     masked_image = image * (mask < 0.5)
     
     return mask, masked_image
-
-
-def collate_fn(examples):
-    pixel_values = [example["instance_images"] for example in examples]
-    prompts = [example["instance_prompt"] for example in examples]
-         
-    masks = []
-    masked_images = []    
-    for example in examples:
-        pil_image = example["PIL_images"]  # Here maybe PilImages
-        # Get Mask
-        # mask = get_mask(pil_image.size, example["image_path"], example["mask_data_path"], 1, False)
-        mask = example["mask"]
-        # prepare mask and masked image
-        mask, masked_image = prepare_mask_and_masked_image(pil_image, mask)
-
-        masks.append(mask)
-        masked_images.append(masked_image)
-  
-    pixel_values = torch.stack(pixel_values)
-    pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-    
-    masks = torch.stack(masks)
-    masked_images = torch.stack(masked_images)
-
-    batch = {"pixel_values": pixel_values, "prompts": prompts, "masks": masks, "masked_images": masked_images}
-
-    return batch
-
 
 def compute_text_embeddings(prompt, text_encoders, tokenizers, max_sequence_length):
     device = text_encoders[0].device
