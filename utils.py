@@ -64,7 +64,7 @@ def load_corgie_dataloader(batch_size, resolution):
 
 def load_removeObject_dataloader(batch_size, resolution):
     ds = MaskedDataset(
-        "g-ronimo/masked_background", 
+        "g-ronimo/masked_background_v2", 
         resolution = resolution,
         resizeTo = resolution
     )
