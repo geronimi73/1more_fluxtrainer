@@ -14,7 +14,99 @@ from pathlib import Path
 from torchvision import transforms
 from torchvision.transforms.functional import crop
 from datasets import load_dataset
+from PIL import Image
+import math
 import random
+
+def load_images_and_masks_from_folder(folder):
+    image_mask_pairs = []
+    for filename in os.listdir(folder):
+        if filename.endswith(('.jpeg', '.jpg', '.png')) and '_mask' not in filename:
+            image_path = os.path.join(folder, filename)
+            mask_filename = filename.split('.')[0] + '_mask.png'
+            mask_path = os.path.join(folder, mask_filename)
+
+            if os.path.exists(mask_path):
+                try:
+                    img = Image.open(image_path)
+                    mask = Image.open(mask_path)
+                    if img is not None and mask is not None:
+                        image_mask_pairs.append((img, mask))
+                except IOError as e:
+                    print(f"Error opening files {filename} or {mask_filename}: {e}")
+            else:
+                print(f"Mask file not found for {filename}")
+
+    return image_mask_pairs
+
+def create_image_gallery(images, cell_size=300, background_color=(255, 255, 255)):
+    """
+    Create a square gallery from a list of PIL images.
+    
+    Args:
+        images: List of PIL Image objects
+        cell_size: Size of each cell in the grid (default: 300)
+        background_color: Background color as RGB tuple (default: white)
+    
+    Returns:
+        PIL Image object containing the gallery
+    """
+    if not images:
+        raise ValueError("Image list cannot be empty")
+    
+    # Calculate grid dimensions (square grid)
+    grid_size = math.ceil(math.sqrt(len(images)))
+    
+    # Create the output image
+    gallery_width = grid_size * cell_size
+    gallery_height = grid_size * cell_size
+    gallery = Image.new('RGB', (gallery_width, gallery_height), background_color)
+    
+    # Process each image
+    for i, img in enumerate(images):
+        # Calculate grid position
+        row = i // grid_size
+        col = i % grid_size
+        
+        # Calculate position in the gallery
+        x = col * cell_size
+        y = row * cell_size
+        
+        # Resize image to fit in cell while preserving aspect ratio
+        img_resized = resize_with_aspect_ratio(img, cell_size)
+        
+        # Center the image within the cell
+        img_width, img_height = img_resized.size
+        center_x = x + (cell_size - img_width) // 2
+        center_y = y + (cell_size - img_height) // 2
+        
+        # Paste the image onto the gallery
+        gallery.paste(img_resized, (center_x, center_y))
+    
+    return gallery
+
+def resize_with_aspect_ratio(img, max_size):
+    """
+    Resize an image to fit within max_size while preserving aspect ratio.
+    
+    Args:
+        img: PIL Image object
+        max_size: Maximum width or height
+    
+    Returns:
+        Resized PIL Image object
+    """
+    original_width, original_height = img.size
+    
+    # Calculate scaling factor
+    scale = min(max_size / original_width, max_size / original_height)
+    
+    # Calculate new dimensions
+    new_width = int(original_width * scale)
+    new_height = int(original_height * scale)
+    
+    # Resize the image
+    return img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
 def load_text_encoders(pretrained_model_name_or_path):
     tokenizer_one = CLIPTokenizer.from_pretrained(
@@ -377,31 +469,6 @@ def get_sigmas(timesteps, noise_scheduler, n_dim=4, device="cuda", dtype=torch.f
     while len(sigma.shape) < n_dim:
         sigma = sigma.unsqueeze(-1)
     return sigma
-
-def log_validation(
-    pipeline,
-    pipeline_args,
-    epoch,
-    num_validation_images,
-    validation_prompt,
-    is_final_validation=False,
-    seed=42,
-):
-    print(
-        f"Running validation... \n Generating {num_validation_images} images with prompt:"
-        f" {validation_prompt}."
-    )
-
-    # run inference
-    generator = torch.Generator(device=pipeline.device).manual_seed(seed) if seed else None
-
-    images = [pipeline(**pipeline_args, generator=generator).images[0] for _ in range(num_validation_images)]
-
-    del pipeline
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    return images
 
 
 

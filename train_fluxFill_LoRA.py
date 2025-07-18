@@ -33,8 +33,9 @@ from utils import (
     remove_cache_and_checkpoints,
     collate_fn,
     compute_text_embeddings,
-    log_validation,
     get_sigmas,
+    load_images_and_masks_from_folder,
+    create_image_gallery,
 )
 from huggingface_hub import snapshot_download
 
@@ -42,11 +43,11 @@ from huggingface_hub import snapshot_download
 set_seed(42)
 debug = False
 pretrained_model_name_or_path = "black-forest-labs/FLUX.1-Fill-dev"
-target_repo = "g-ronimo/flux-fill_ObjectRemoval-LoRA_7thTry"
+target_repo = "g-ronimo/flux-fill_ObjectRemoval-LoRA_10"
 device = "cuda"
 weight_dtype = torch.bfloat16
 learning_rate = 1e-4
-num_epochs = 400
+num_epochs = 600
 batch_size = 4
 rank = 4
 alpha = 4
@@ -81,8 +82,8 @@ resolution = 512
 # Eval ..
 validation_prompt = instance_prompt
 num_validation_images = 1 
-val_image = load_image("./validation_remove.jpg")
-val_mask = load_image("./validation_remove_mask.png")
+# val_image = load_image("./validation_remove.jpg")
+# val_mask = load_image("./validation_remove_mask.png")
 
 ## FUNCTION defs
 
@@ -105,6 +106,38 @@ def upload_adapter(model, target_repo, local_dir="./adapter"):
         repo_id=repo_id,
         folder_path=local_dir,
     )
+
+
+def log_validation(
+    pipeline,
+    # pipeline_args,
+    epoch,
+    num_validation_images,
+    validation_prompt,
+    is_final_validation=False,
+    seed=42,
+):
+    print(
+        f"Running validation... \n Generating {num_validation_images} images with prompt:"
+        f" {validation_prompt}."
+    )
+
+    # run inference
+    generator = torch.Generator(device=pipeline.device).manual_seed(seed) if seed else None
+
+    images = []
+    for val_image, val_mask in load_images_and_masks_from_folder("removal_validations"):
+        pipeline_args = {"prompt": validation_prompt, "image": val_image, "mask_image": val_mask}
+        image = pipeline(**pipeline_args, generator=generator).images[0]
+        images.append(image)
+    # images = [pipeline(**pipeline_args, generator=generator).images[0] for _ in range(num_validation_images)]
+
+    del pipeline
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return images
+
 
 
 # Load scheduler
@@ -202,7 +235,7 @@ wandb.init(
 ).log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".json"))
 
 # Prepare for validation
-pipeline_args = {"prompt": validation_prompt, "image": val_image, "mask_image": val_mask}
+# pipeline_args = {"prompt": validation_prompt, "image": val_image, "mask_image": val_mask}
 pipeline = FluxFillPipeline(
     scheduler = noise_scheduler,
     vae = vae,
@@ -257,10 +290,9 @@ for epoch in range(num_epochs):
             transformer.dtype,
         )
         
-        noise = torch.randn_like(model_input)
         bsz = model_input.shape[0]
         
-        # TODO: Simplify this, we don't the scheduler to sample a timestep!
+        # TODO: Simplify this, we don't need the scheduler to sample a timestep!
         # Sample a random timestep for each image
         # for weighting schemes where we sample timesteps non-uniformly
         u = compute_density_for_timestep_sampling(
@@ -273,7 +305,9 @@ for epoch in range(num_epochs):
         indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
         timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)
         
+        noise = torch.randn_like(model_input)
         sigmas = get_sigmas(timesteps, noise_scheduler_copy, n_dim=model_input.ndim, dtype=model_input.dtype)
+
         noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
         
         packed_noisy_model_input = FluxFillPipeline._pack_latents(
@@ -365,11 +399,13 @@ for epoch in range(num_epochs):
         if global_step % 100 == 0:
             images = log_validation(
                 pipeline=pipeline,
-                pipeline_args=pipeline_args,
+                # pipeline_args=pipeline_args,
                 epoch=epoch,
                 validation_prompt=validation_prompt,
                 num_validation_images=num_validation_images,
-             )
+            )
+            images = [ create_image_gallery(images) ]
+
             wandb.log(dict(validation = [ wandb.Image(image, caption=f"{i}: {validation_prompt}") for i, image in enumerate(images) ]))
     
         global_step += 1
