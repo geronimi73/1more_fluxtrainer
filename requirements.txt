@@ -7,3 +7,4 @@ wandb
 huggingface_hub
 datasets
 pillow
+fire

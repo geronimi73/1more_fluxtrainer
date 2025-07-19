@@ -137,26 +137,9 @@ def remove_cache_and_checkpoints(root_dir):
         if '.ipynb_checkpoints' in dirnames:
             shutil.rmtree(os.path.join(dirpath, '.ipynb_checkpoints'))
 
-def load_corgie_dataloader(batch_size, resolution):
+def get_maskeddataset_dataloader(hf_repo, batch_size, resolution):
     ds = MaskedDataset(
-        "g-ronimo/masked_corgies", 
-        resolution = resolution,
-        resizeTo = resolution
-    )
-
-    train_dataloader = torch.utils.data.DataLoader(
-        ds,
-        batch_size = batch_size,
-        shuffle = True,
-        collate_fn = lambda examples: collate_fn(examples),
-        # num_workers=args.dataloader_num_workers,
-    )
-
-    return train_dataloader
-
-def load_removeObject_dataloader(batch_size, resolution):
-    ds = MaskedDataset(
-        "g-ronimo/masked_background_v2", 
+        hf_repo, 
         resolution = resolution,
         resizeTo = resolution
     )
