@@ -95,8 +95,8 @@ def run_validation(
     return images
 
 def main(
-    target_repo: str = "g-ronimo/flux-fill_ObjectRemoval-LoRA_12",
-    dataset_repo: str = "g-ronimo/masked_background_v3",
+    target_repo: str = "g-ronimo/flux-fill_ObjectRemoval-LoRA_13",
+    dataset_repo: str = "g-ronimo/masked_background_v4",
     learning_rate: float = 1e-4,
     batch_size: int = 4,
     num_steps: int = 4_000,
@@ -242,7 +242,7 @@ def main(
     # TRAIN!
     global_step = 0
 
-    while global_step < num_steps:
+    while global_step < num_steps + 1:
         transformer.train()
             
         for batch in train_dataloader:
@@ -376,7 +376,6 @@ def main(
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad()
-                
             
             # Always log
             epoch = global_step / len(train_dataloader)
