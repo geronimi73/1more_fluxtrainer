@@ -34,7 +34,6 @@ from utils import (
 from huggingface_hub import snapshot_download
 
 # TODOs:
-# * cache latents
 # * load instance_prompt from dataset!
 
 # try and create target repo
@@ -94,18 +93,18 @@ def run_validation(
 
     return images
 
-def offload_for_inference(transformer, vae, text_encoder_one, text_encoder_two):
-    [model.to("cuda") for model in [transformer, vae, text_encoder_one, text_encoder_two]]
+def offload_models(models):
+    [model.to("cpu") for model in models]
+    free_memory()
 
-def offload_for_train(transformer, vae, text_encoder_one, text_encoder_two):
-    [model.to("cuda") for model in [transformer, vae]]
-    [model.to("cpu") for model in [text_encoder_one, text_encoder_two]]
+def onload_models(models):
+    [model.to("cuda") for model in models]
 
 def main(
-    target_repo: str = "g-ronimo/flux-fill_ObjectRemoval-LoRA_14",
+    target_repo: str = "g-ronimo/flux-fill_ObjectRemoval-LoRA_15",
     dataset_repo: str = "g-ronimo/masked_background_v4",
-    learning_rate: float = 1e-4,
-    batch_size: int = 8,
+    learning_rate: float = 2e-4,
+    batch_size: int = 4,
     num_steps: int = 4_000,
     rank: int = 4,
     alpha: int = 4,
@@ -157,6 +156,8 @@ def main(
     # Load text encoders
     print("Loading tokenizers and text encoders")
     tokenizer_one, tokenizer_two, text_encoder_one, text_encoder_two = load_text_encoders(pretrained_model_name_or_path,)
+    for i, model in enumerate([text_encoder_one, text_encoder_two]):
+        print(f"Text encoder {i+1} # parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
 
     # Load VAE
     print("Loading VAE")
@@ -164,8 +165,9 @@ def main(
         pretrained_model_name_or_path,
         subfolder="vae",
     )
+    print(f"# parameters: {sum(p.numel() for p in vae.parameters()) / 1e6:.2f}M")
 
-    # Move to GPU, otherwise we might run out of RAM
+    # Move everything to GPU, otherwise we might run out of RAM
     [model.to(device, dtype=dtype) for model in [vae, text_encoder_one, text_encoder_two]]
 
     # Load Transformer
@@ -174,8 +176,8 @@ def main(
         pretrained_model_name_or_path, 
         subfolder="transformer", 
         torch_dtype=dtype
-    )
-    transformer.to(device, dtype=dtype)
+    ).to(device, dtype=dtype)
+    print(f"# parameters: {sum(p.numel() for p in transformer.parameters()) / 1e6:.2f}M")
 
     # We only train the additional adapter LoRA layers
     [model.requires_grad_(False) for model in [transformer, vae, text_encoder_one, text_encoder_two]]
@@ -193,6 +195,7 @@ def main(
     )
     transformer.add_adapter(transformer_lora_config)
     transformer_lora_parameters = list(filter(lambda p: p.requires_grad, transformer.parameters()))
+    print(f"LoRA Adapter # parameters: {sum(p.numel() for p in transformer_lora_parameters) / 1e6:.2f}M")
 
     # =Model setup done! save in dict
     models = dict(transformer=transformer, vae=vae, text_encoder_one=text_encoder_one, text_encoder_two=text_encoder_two)
@@ -225,7 +228,7 @@ def main(
         max_sequence_length = max_sequence_length
     )
 
-    free_memory()
+    offload_models([text_encoder_one, text_encoder_two])
 
     prompt_embeds = instance_prompt_hidden_states
     pooled_prompt_embeds = instance_pooled_prompt_embeds
@@ -253,21 +256,17 @@ def main(
     global_step = 0
 
     while global_step < num_steps + 1:
-        offload_for_train(**models)
         transformer.train()
 
         for batch in train_dataloader:
             if global_step > num_steps:
                 break
 
-            prompts = batch["prompts"]
-
             # 1 Image latent
             model_input = vae.encode(
                 batch["images"].to(device).reshape(batch["images"].shape).to(transformer.dtype)
             ).latent_dist.sample()
             model_input = (model_input - vae.config.shift_factor) * vae.config.scaling_factor
-            model_input = model_input.to(transformer.dtype)
         
             vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
             
@@ -275,7 +274,6 @@ def main(
             masked_image_latents = vae.encode(
                 batch["images_masked"].to(device).reshape(batch["images"].shape).to(transformer.dtype)
             ).latent_dist.sample()
-            
             masked_image_latents = (masked_image_latents - vae.config.shift_factor) * vae.config.scaling_factor
             
             # 3 Mask (latent?)
@@ -402,13 +400,13 @@ def main(
 
             # Validate 
             if global_step % validate_every == 0:
-                offload_for_inference(**models)
+                onload_models([text_encoder_one, text_encoder_two])
                 images = run_validation(
                     pipeline=pipeline,
                     validation_prompt=validation_prompt,
                 )
                 wandb.log(dict(validation = wandb.Image(create_image_gallery(images))))
-                offload_for_train(**models)
+                offload_models([text_encoder_one, text_encoder_two])
         
             # Save LoRA weights
             if global_step % save_every == 0 or global_step == num_steps:
