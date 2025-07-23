@@ -94,11 +94,18 @@ def run_validation(
 
     return images
 
+def offload_for_inference(transformer, vae, text_encoder_one, text_encoder_two):
+    [model.to("cuda") for model in [transformer, vae, text_encoder_one, text_encoder_two]]
+
+def offload_for_train(transformer, vae, text_encoder_one, text_encoder_two):
+    [model.to("cuda") for model in [transformer, vae]]
+    [model.to("cpu") for model in [text_encoder_one, text_encoder_two]]
+
 def main(
-    target_repo: str = "g-ronimo/flux-fill_ObjectRemoval-LoRA_13",
+    target_repo: str = "g-ronimo/flux-fill_ObjectRemoval-LoRA_14",
     dataset_repo: str = "g-ronimo/masked_background_v4",
     learning_rate: float = 1e-4,
-    batch_size: int = 4,
+    batch_size: int = 8,
     num_steps: int = 4_000,
     rank: int = 4,
     alpha: int = 4,
@@ -187,6 +194,9 @@ def main(
     transformer.add_adapter(transformer_lora_config)
     transformer_lora_parameters = list(filter(lambda p: p.requires_grad, transformer.parameters()))
 
+    # =Model setup done! save in dict
+    models = dict(transformer=transformer, vae=vae, text_encoder_one=text_encoder_one, text_encoder_two=text_encoder_two)
+
     # Setup Optimizer
     optimizer = optimizer_class(
         [{"params": transformer_lora_parameters, "lr": learning_rate}],
@@ -243,8 +253,9 @@ def main(
     global_step = 0
 
     while global_step < num_steps + 1:
+        offload_for_train(**models)
         transformer.train()
-            
+
         for batch in train_dataloader:
             if global_step > num_steps:
                 break
@@ -267,7 +278,7 @@ def main(
             
             masked_image_latents = (masked_image_latents - vae.config.shift_factor) * vae.config.scaling_factor
             
-            # 3 Mask latent
+            # 3 Mask (latent?)
             mask = batch["masks"]    
             mask = mask[:, 0, :, :]  # batch_size, 8 * height, 8 * width (mask has not been 8x compressed)
             mask = mask.view(
@@ -391,11 +402,13 @@ def main(
 
             # Validate 
             if global_step % validate_every == 0:
+                offload_for_inference(**models)
                 images = run_validation(
                     pipeline=pipeline,
                     validation_prompt=validation_prompt,
                 )
                 wandb.log(dict(validation = wandb.Image(create_image_gallery(images))))
+                offload_for_train(**models)
         
             # Save LoRA weights
             if global_step % save_every == 0 or global_step == num_steps:
