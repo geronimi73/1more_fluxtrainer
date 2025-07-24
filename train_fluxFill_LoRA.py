@@ -101,10 +101,10 @@ def onload_models(models):
     [model.to("cuda") for model in models]
 
 def main(
-    target_repo: str = "g-ronimo/flux-fill_ObjectRemoval-LoRA_15",
-    dataset_repo: str = "g-ronimo/masked_background_v4",
+    target_repo: str = "g-ronimo/flux-fill_ObjectRemoval-LoRA_17",
+    dataset_repo: str = "g-ronimo/masked_background_v5",
     learning_rate: float = 2e-4,
-    batch_size: int = 4,
+    batch_size: int = 8,
     num_steps: int = 4_000,
     rank: int = 4,
     alpha: int = 4,
